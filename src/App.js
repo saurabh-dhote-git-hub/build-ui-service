@@ -1,112 +1,180 @@
 import React, { useState } from 'react';
-import { EventSourcePolyfill } from 'event-source-polyfill';
-import './App.css'; // for spinner animation
 
 function App() {
-  const [repo, setRepo] = useState('');
-  const [service, setService] = useState('');
-  const [build, setBuild] = useState('');
-  const [logs, setLogs] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
+  const [repoUrl, setRepoUrl] = useState('');
+  const [logs, setLogs] = useState([]);
+  const [isBuilding, setIsBuilding] = useState(false);
+  const [theme, setTheme] = useState('dark');
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    setLogs("🚀 Running script...\n");
-    setLoading(true);
+  const isValidGitUrl = (url) => /^https:\/\/(www\.)?github\.com\/[\w.-]+\/[\w.-]+(\.git)?$/.test(url);
 
-    const eventSource = new EventSourcePolyfill('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo, service, build })
+  const handleBuild = async () => {
+    if (!isValidGitUrl(repoUrl)) {
+      alert('Please enter a valid GitHub repository URL.');
+      return;
+    }
+
+    setLogs([]);
+    setIsBuilding(true);
+
+    const encodedRepo = encodeURIComponent(repoUrl);
+    const eventSource = new EventSource(`http://localhost:8080/build/logs?repoUrl=${encodedRepo}`);
+
+    eventSource.onmessage = (event) => {
+      setLogs((prev) => [...prev, event.data]);
+    };
+
+    eventSource.onerror = (err) => {
+      console.error('SSE error:', err);
+      eventSource.close();
+      setIsBuilding(false);
+    };
+
+    eventSource.addEventListener('message', (event) => {
+      if (event.data.includes('Build complete!')) {
+        setIsBuilding(false);
+        eventSource.close();
+      }
     });
 
-    eventSource.onmessage = (e) => {
-      setLogs((prev) => prev + e.data + '\n');
-    };
-
-    eventSource.onerror = () => {
-      setLogs((prev) => prev + "\n❌ Error streaming logs");
-      setLoading(false);
+    try {
+      await fetch('http://localhost:8080/build/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl }),
+      });
+    } catch (err) {
+      console.error('Build request failed:', err);
       eventSource.close();
-    };
-
-    eventSource.onopen = () => setLoading(false);
+      setIsBuilding(false);
+    }
   };
 
-  const sharedStyle = {
-    color: darkMode ? '#fff' : '#000',
-    backgroundColor: darkMode ? '#1a1a1a' : '#fff',
-    transition: 'all 0.3s ease'
+  const handleDownload = () => {
+    const blob = new Blob([logs.join('\n')], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'build-log.txt';
+    a.click();
+    window.URL.revokeObjectURL(url);
   };
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
+
+  const darkTheme = theme === 'dark';
 
   return (
-    <div style={{ ...sharedStyle, minHeight: '100vh', padding: '2rem' }}>
-      <div style={{ maxWidth: 600, margin: 'auto', padding: '2rem', backgroundColor: darkMode ? '#2c2c2c' : '#f9f9f9', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2>⚙️ Run Build Script</h2>
-          <label>
-            <input type="checkbox" checked={darkMode} onChange={() => setDarkMode(!darkMode)} />
-            <span style={{ marginLeft: '8px' }}>🌙 Dark Mode</span>
-          </label>
-        </div>
-
-        <form onSubmit={handleSubmit}>
-          <input style={inputStyle(darkMode)} placeholder="📦 GitHub Repo URL" value={repo} onChange={(e) => setRepo(e.target.value)} required />
-          <input style={inputStyle(darkMode)} placeholder="🛠️ Service Name" value={service} onChange={(e) => setService(e.target.value)} required />
-          <input style={inputStyle(darkMode)} placeholder="🧪 Build Type (e.g. maven or gradle)" value={build} onChange={(e) => setBuild(e.target.value)} required />
-          <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-            <button type="submit" style={buttonStyle}>Run Script</button>
-          </div>
-        </form>
-
-        {loading && (
-          <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-            <div className="spinner"></div>
-            <p>Loading...</p>
-          </div>
-        )}
-
-        <div style={logBoxStyle(darkMode)}>
-          {logs}
-        </div>
+    <div style={{ ...styles.container, backgroundColor: darkTheme ? '#1e1e1e' : '#f9f9f9', color: darkTheme ? '#fff' : '#111' }}>
+      <div style={styles.header}>
+        <h2 style={styles.heading}>⚙️ Git Build Runner</h2>
+        <button onClick={toggleTheme} style={styles.themeButton}>
+          {darkTheme ? '🌞 Light Mode' : '🌙 Dark Mode'}
+        </button>
       </div>
+
+      <div style={styles.inputGroup}>
+        <input
+          type="text"
+          placeholder="Enter GitHub Repo URL"
+          value={repoUrl}
+          required
+          onChange={(e) => setRepoUrl(e.target.value)}
+          style={styles.input}
+        />
+        <button
+          onClick={handleBuild}
+          disabled={isBuilding || !repoUrl.trim()}
+          style={styles.button}
+        >
+          {isBuilding ? 'Building...' : 'Run Build'}
+        </button>
+        <button
+          onClick={handleDownload}
+          disabled={logs.length === 0}
+          style={styles.downloadButton}
+        >
+          📥 Download Logs
+        </button>
+      </div>
+
+      <pre style={{ ...styles.logBox, backgroundColor: darkTheme ? '#111' : '#eee', color: darkTheme ? '#00ff88' : '#333' }}>
+        {logs.map((line, idx) => (
+          <div key={idx}>{line}</div>
+        ))}
+        {isBuilding && <div style={{ color: '#999' }}>⏳ Running build...</div>}
+      </pre>
     </div>
   );
 }
 
-const inputStyle = (dark) => ({
-  width: '100%',
-  padding: '12px',
-  marginBottom: '1rem',
-  borderRadius: '8px',
-  border: dark ? '1px solid #444' : '1px solid #ccc',
-  fontSize: '1rem',
-  backgroundColor: dark ? '#333' : '#fff',
-  color: dark ? '#eee' : '#000'
-});
-
-const buttonStyle = {
-  padding: '12px 24px',
-  backgroundColor: '#2563eb',
-  color: 'white',
-  border: 'none',
-  borderRadius: '8px',
-  fontSize: '1rem',
-  cursor: 'pointer'
+const styles = {
+  container: {
+    padding: '40px',
+    fontFamily: 'Segoe UI, sans-serif',
+    minHeight: '100vh',
+  },
+  heading: {
+    fontSize: '28px',
+    marginBottom: '10px',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  inputGroup: {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '20px',
+    flexWrap: 'wrap',
+  },
+  input: {
+    flex: 1,
+    padding: '10px 12px',
+    fontSize: '16px',
+    border: '1px solid #ccc',
+    borderRadius: '4px',
+    minWidth: '300px',
+  },
+  button: {
+    padding: '10px 16px',
+    fontSize: '16px',
+    backgroundColor: '#007bff',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+  },
+  downloadButton: {
+    padding: '10px 14px',
+    fontSize: '16px',
+    backgroundColor: '#28a745',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+  },
+  themeButton: {
+    padding: '8px 12px',
+    fontSize: '14px',
+    backgroundColor: '#444',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+  },
+  logBox: {
+    padding: '15px',
+    height: '400px',
+    overflowY: 'auto',
+    borderRadius: '6px',
+    fontFamily: 'monospace',
+    fontSize: '14px',
+    border: '1px solid #ccc',
+  },
 };
-
-const logBoxStyle = (dark) => ({
-  backgroundColor: dark ? '#000' : '#1e1e1e',
-  color: '#00ff00',
-  padding: '1rem',
-  marginTop: '2rem',
-  height: '300px',
-  overflowY: 'auto',
-  borderRadius: '8px',
-  fontFamily: 'monospace',
-  fontSize: '0.95rem',
-  whiteSpace: 'pre-wrap'
-});
 
 export default App;
